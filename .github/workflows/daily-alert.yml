@@ -9,10 +9,13 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-daily-alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     env:
       TZ: America/Sao_Paulo
@@ -47,52 +50,33 @@ jobs:
           fi
           echo ""; echo "All secrets configured."
 
-      # ── 3. Install R + packages ──────────────────────────────────────────────
-      - name: Setup R
-        uses: r-lib/actions/setup-r@v2
+      # ── 3. Setup Python + install dependencies ──────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          r-version: "4.3"
+          python-version: "3.12"
 
-      - name: Cache R packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.R_LIBS_USER }}
-          key: r-sb-alert-${{ runner.os }}-${{ hashFiles('daily_alert/check_support_barrier_today.R') }}
-          restore-keys: r-sb-alert-${{ runner.os }}-
-
-      - name: Install R dependencies
-        run: |
-          Rscript -e "
-            pkgs <- c('quantmod','dplyr','tibble','readr')
-            missing <- pkgs[!pkgs %in% installed.packages()[,'Package']]
-            if (length(missing)) install.packages(missing, repos='https://cloud.r-project.org')
-          "
+      - name: Install Python dependencies
+        run: pip install yfinance pandas numpy
 
       # ── 4. Network check ─────────────────────────────────────────────────────
       - name: Network diagnostics
         run: |
           python3 -c "
           import socket
-          hosts = [('query1.finance.yahoo.com', 443, 'Yahoo Finance')]
-          for host, port, name in hosts:
-              try:
-                  socket.getaddrinfo(host, port)
-                  print(f'✓ {name}: reachable')
-              except socket.gaierror as e:
-                  print(f'✗ {name}: {e}'); exit(1)
+          try:
+              socket.getaddrinfo('query1.finance.yahoo.com', 443)
+              print('✓ Yahoo Finance: reachable')
+          except socket.gaierror as e:
+              print(f'✗ Yahoo Finance: {e}'); exit(1)
           "
 
-      # ── 5. Run R alert script ─────────────────────────────────────────────────
+      # ── 5. Run Python alert script ───────────────────────────────────────────
       - name: Run support/barrier daily check
         working-directory: daily_alert
-        run: Rscript check_support_barrier_today.R
+        run: python3 check_support_barrier_today.py
 
-      # ── 6. Setup Python + send e-mail ────────────────────────────────────────
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # ── 6. Send e-mail ───────────────────────────────────────────────────────
       - name: Send alert e-mail
         working-directory: daily_alert
         run: python3 send_support_barrier_email.py
