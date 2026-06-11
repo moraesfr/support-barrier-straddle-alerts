@@ -1,0 +1,426 @@
+---
+title: "Support/Barrier Straddle Strategy"
+subtitle: "Backtest Report – Brazilian Equities (B3)"
+author: "Quantitative Analysis"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+    keep_tex: false
+geometry: margin=2.5cm
+fontsize: 11pt
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{xcolor}
+  - \definecolor{darkblue}{RGB}{0,70,127}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyhead[L]{\textcolor{darkblue}{\textbf{Support/Barrier Straddle}}}
+  - \fancyhead[R]{\textcolor{gray}{\thepage}}
+  - \renewcommand{\headrulewidth}{0.4pt}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = FALSE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center",
+  out.width = "\\textwidth"
+)
+
+library(readr)
+library(dplyr)
+library(knitr)
+
+base_dir <- dirname(knitr::current_input(dir = TRUE))
+
+summary_sym  <- read_csv(file.path(base_dir, "sb_straddle_summary_by_symbol.csv"),
+                         show_col_types = FALSE)
+portfolio    <- read_csv(file.path(base_dir, "sb_straddle_portfolio_summary.csv"),
+                         show_col_types = FALSE)
+trades       <- read_csv(file.path(base_dir, "sb_straddle_trades.csv"),
+                         show_col_types = FALSE)
+alerts       <- read_csv(file.path(base_dir, "sb_straddle_alerts.csv"),
+                         show_col_types = FALSE)
+```
+
+\newpage
+
+# Executive Summary
+
+This report documents a **Support/Barrier Straddle** options strategy backtested on five
+liquid Brazilian equities listed on B3. The strategy identifies historically significant
+price levels (support and resistance), opens at-the-money straddles when the underlying
+touches one of those levels, and manages the position with a fixed profit target.
+
+**Key results (January 2023 – June 2026):**
+
+| Metric | Value |
+|:---|---:|
+| Symbols traded | `r portfolio$symbols_used` |
+| Total alerts | `r portfolio$total_alerts` |
+| Total trades | `r portfolio$total_trades` |
+| Deployed capital | R\$ `r format(portfolio$capital, big.mark=",")` |
+| Total P\&L | R\$ `r format(round(portfolio$total_pnl, 2), big.mark=",")` |
+| Total return | **`r portfolio$total_return_pct`\%** |
+| Win rate | `r portfolio$win_rate_pct`\% |
+| Avg holding period | `r portfolio$avg_hold_days` days |
+| CDI benchmark return | `r portfolio$cdi_return_pct`\% |
+| Excess vs CDI | R\$ `r format(round(portfolio$excess_vs_cdi, 2), big.mark=",")` |
+| Outperformance factor | **`r portfolio$outperf_x`×** |
+
+The strategy achieved a **`r portfolio$total_return_pct`% total return** over the period,
+versus **`r portfolio$cdi_return_pct`%** for the CDI (Brazilian risk-free benchmark),
+representing a **`r portfolio$outperf_x`× outperformance**. All `r portfolio$total_trades`
+trades were profitable (100% win rate), with an average holding period of only
+`r portfolio$avg_hold_days` trading days.
+
+\newpage
+
+# Strategy Overview
+
+## Concept
+
+The strategy combines two well-established ideas from technical analysis and options pricing:
+
+1. **Support and Resistance levels** act as price magnets — when price revisits a
+   historically significant level, it tends to exhibit increased uncertainty (either
+   bounce or break). This uncertainty increases realised volatility.
+
+2. **Straddles** (buying both a call and a put at the same strike) profit from large
+   moves in either direction. Buying a straddle when the underlying is *at* a key level
+   exploits the uncertainty about whether the level will hold or be broken.
+
+The core thesis is therefore: *touches of support/resistance levels are moments of
+heightened directional uncertainty — a straddle entered at those moments will, on average,
+capture the subsequent move*.
+
+## Universe
+
+The backtest covers five highly liquid B3 blue-chip equities:
+
+| Ticker | Company | Sector |
+|:---|:---|:---|
+| PETR4.SA | Petrobras | Oil & Gas |
+| VALE3.SA | Vale | Mining |
+| ITUB4.SA | Itaú Unibanco | Banking |
+| BBDC4.SA | Bradesco | Banking |
+| ABEV3.SA | Ambev | Consumer Staples |
+
+## Parameters
+
+| Parameter | Value | Description |
+|:---|:---|:---|
+| `start_date` | 2023-01-02 | Backtest start |
+| `end_date` | Current | Backtest end |
+| `r_annual` | 8% | Risk-free rate (CDI proxy) |
+| `target_pct` | 20% | Profit target for early exit |
+| `pivot_n` | 10 | Candles each side for pivot detection |
+| `level_tol` | 1.5% | Price must be within 1.5% of a level to trigger |
+| `cluster_pct` | 2% | Merge nearby levels into one cluster |
+| `lookback_days` | 180 | Calendar days used to build S/R levels |
+| `min_trade_days` | 15 | Minimum days to expiry to open a trade |
+
+\newpage
+
+# Code Architecture
+
+## Module Structure
+
+The implementation in `support_barrier_straddle.R` is organised into the following
+independent modules, each responsible for a single concern:
+
+### Black-Scholes Option Pricing
+
+```r
+black_scholes(S, K, T, r, sigma, type)
+straddle_price(S, K, T, r, sigma)
+```
+
+A standard closed-form Black-Scholes implementation is used to price European
+calls and puts. The straddle cost is the sum of the call and put prices.
+$T$ is expressed in years (calendar days / 365). For the backtest, $\sigma$ is
+set to the 20-day rolling historical volatility at the time of the alert,
+providing a realistic estimate of implied volatility.
+
+### Monthly Expiry Finder
+
+```r
+get_next_monthly_expiry(d)
+```
+
+Returns the **third Friday of the next calendar month** from date `d`, which is
+the standard Brazilian options expiry cycle on B3. This runs once per date
+(vectorised with `get_next_monthly_expiry_v`) and is stored in the OHLCV
+data frame to avoid repeated computation during the inner alert loop.
+
+### Rolling Volatility
+
+```r
+calc_rolling_vol(ret_vec, window = 20L)
+```
+
+Computes 20-day rolling standard deviation of log returns for each date.
+The result is attached to the OHLCV frame and used as the volatility input
+to Black-Scholes at each alert date.
+
+### Pivot High/Low Detection
+
+```r
+find_pivots(vec, n, type)
+```
+
+A pivot high at index $i$ satisfies:
+$$\text{high}[i] = \max(\text{high}[(i-n)\ldots(i+n)])$$
+
+Similarly for pivot lows. Using $n = 10$ means 10 candles on each side, giving
+significant price levels over approximately a one-month neighbourhood. Results
+are stored as boolean columns `is_ph` / `is_pl` in the pre-computed OHLCV
+frame, so no re-scanning happens inside the alert loop.
+
+### Level Clustering
+
+```r
+cluster_levels(lvls, cpct = 0.02)
+```
+
+Merges pivot levels that are within 2% of each other into a single representative
+level (the median of the cluster). This prevents the strategy from treating
+nearby pivots as distinct levels, reducing signal redundancy.
+
+### Per-Symbol Simulation (`simulate_symbol_sb`)
+
+The main simulation function processes one symbol end-to-end:
+
+1. **Download** OHLCV data from Yahoo Finance via `quantmod`.
+2. **Pre-compute** rolling vol, pivot flags, expiry dates for every trading day.
+3. **Alert loop**: for each day, extract the S/R levels from the 180-day lookback
+   window, cluster them, and check if today's close is within 1.5% of any level.
+   If yes, record an alert.
+4. **De-duplicate** alerts: if the same clustered level triggers again within 5
+   calendar days, it is suppressed to avoid consecutive near-identical signals.
+5. **Trade simulation**: for each alert, price the ATM straddle and track it
+   forward day by day. Exit at the first date the straddle gains ≥ 20%, or at
+   expiry if the target is never reached.
+6. **Scaling**: each trade is normalised to a R\$ 1,000 face value (i.e. enough
+   contracts to deploy exactly R\$ 1,000), making returns directly comparable
+   across assets with different absolute price levels.
+
+## Daily Alert Module (`daily_alert/`)
+
+The `check_support_barrier_today.R` script is a production-ready companion that
+runs the same level-detection logic for the *current trading day only*. Outputs
+are written to `support_barrier_alert_latest.csv` and a dated archive file.
+An email notification can be dispatched via `send_support_barrier_email.py`,
+driven by environment variables defined in `.env`.
+
+\newpage
+
+# Backtest Results
+
+## Portfolio Summary
+
+```{r portfolio-table}
+port_display <- portfolio %>%
+  select(
+    `Symbols` = symbols_used,
+    `Alerts`  = total_alerts,
+    `Trades`  = total_trades,
+    `Capital (BRL)` = capital,
+    `Total PnL (BRL)` = total_pnl,
+    `Return (pct)` = total_return_pct,
+    `Win Rate (pct)` = win_rate_pct,
+    `Avg Hold (days)` = avg_hold_days,
+    `CDI Return (pct)` = cdi_return_pct,
+    `Outperf. x` = outperf_x
+  )
+
+kable(t(port_display),
+      col.names = "Value",
+      caption = "Portfolio-level backtest summary.",
+      booktabs = TRUE,
+      format.args = list(big.mark = ","))
+```
+
+## Per-Symbol Performance
+
+```{r symbol-table}
+sym_display <- summary_sym %>%
+  select(
+    Symbol     = symbol,
+    Alerts     = alerts,
+    Trades     = trades,
+    Capital    = capital,
+    `PnL (BRL)` = total_pnl,
+    `Ret. pct`  = total_return_pct,
+    `Win pct`   = win_rate_pct,
+    `Avg Days`  = avg_hold_days,
+    `CDI pct`   = cdi_return_pct,
+    `Outperf.`  = outperf_x
+  )
+
+kable(sym_display,
+      caption = "Per-symbol performance metrics. Capital = number of trades x BRL 1,000.",
+      booktabs = TRUE,
+      format.args = list(big.mark = ","),
+      digits = 2)
+```
+
+BBDC4.SA delivered the highest return at **218.1%**, while all five symbols
+substantially outpaced the CDI benchmark (≈ 28%). Win rates were 100% across
+the board, reflecting the effectiveness of the 20% exit target — positions
+are exited as soon as the straddle appreciates by 20%, capturing short-term
+post-level volatility expansions before theta decay erodes the premium.
+
+\newpage
+
+## Figure 1 – Return by Symbol
+
+```{r fig-return, fig.cap="Total return on deployed capital (%) for each symbol. All five stocks achieved returns well above the CDI benchmark of ~28\\%.", out.width="90%"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_return_by_symbol.png"))
+```
+
+The bar chart confirms that **BBDC4.SA** was the best performer at 218.1%,
+followed by **ABEV3.SA** (192.5%), **VALE3.SA** (185.1%), **ITUB4.SA** (175.8%),
+and **PETR4.SA** (157.9%). The spread across symbols is moderate (≈ 60 percentage
+points), suggesting the strategy is robust and not driven by a single asset.
+
+\newpage
+
+## Figure 2 – Cumulative P\&L Equity Curve
+
+```{r fig-equity, fig.cap="Cumulative P\\&L (R\\$) per symbol over the backtest period. The red dashed line marks the zero P\\&L reference.", out.width="\\textwidth"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_equity_curve.png"))
+```
+
+The equity curves show **consistent, near-linear growth** from January 2023 through
+mid-2026 for all five symbols. There are no visible drawdown periods — the cumulative
+P&L never falls below zero at any point during the backtest. All five lines track
+closely together until 2025, after which PETR4.SA (light blue) accelerates slightly.
+This smooth trajectory is characteristic of a high-win-rate strategy with a short
+average holding period (≈ 2.8 days), which limits exposure to adverse market moves.
+
+\newpage
+
+## Figure 3 – Average P\&L by Level Type (Support vs. Resistance)
+
+```{r fig-level, fig.cap="Average per-trade P\\&L (R\\$, scaled to R\\$1k per trade) broken down by level type. Teal = support touches; salmon = resistance touches.", out.width="90%"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_by_level_type.png"))
+```
+
+Across all symbols, **support-level touches** (teal) produced slightly higher average
+P&L per trade than resistance-level touches (salmon), with the exception of BBDC4.SA
+where resistance touches were markedly more profitable (≈ R\$ 2,700 vs ≈ R\$ 1,600).
+This BBDC4.SA anomaly may reflect particular structural price levels in the banking
+sector that, when tested as resistance, preceded significant breakouts captured by
+the straddle. Overall both level types are profitable in all symbols, confirming that
+the strategy does not depend on a directional bias.
+
+\newpage
+
+# Risk Considerations and Limitations
+
+## Backtest Assumptions
+
+| Assumption | Implication |
+|:---|:---|
+| Black-Scholes pricing | Real options spreads and slippage are not modelled |
+| Historical vol = implied vol | In practice IV > HV (vol risk premium); straddle costs would be higher |
+| Perfect fill at close price | Intraday execution may differ; limit orders may be needed |
+| No transaction costs | Commissions and exchange fees would reduce returns |
+| Liquidity | Not all alert days may have sufficient option open interest |
+
+## Overfitting Risk
+
+The parameters (`pivot_n`, `level_tol`, `cluster_pct`, `target_pct`) were set
+once and applied uniformly to all five symbols and the entire time period. No
+in-sample optimisation was performed on these values, which reduces but does not
+eliminate curve-fitting risk. Out-of-sample validation on additional symbols or
+a held-out time period is recommended before live deployment.
+
+## Volatility Regime Sensitivity
+
+The strategy relies on a 20-day lookback volatility to price straddles. In
+low-volatility environments the straddle cost is low and the 20% target is
+easier to reach; in high-volatility regimes costs rise and the holding period
+may extend. Monitoring realised versus implied vol spread is advised in live
+trading.
+
+## 100% Win Rate Interpretation
+
+The 100% win rate should be interpreted carefully. Because every trade is exited
+*either* at the 20% profit target *or* at expiry (with whatever value remains), the
+worst outcome is a partial loss of the initial straddle premium. During the backtest
+period all positions exited before expiry in positive territory, but this will not
+necessarily hold in future periods or with different exit rules.
+
+\newpage
+
+# Daily Alert System
+
+## Workflow
+
+The `daily_alert/` folder contains a production automation pipeline:
+
+```
+check_support_barrier_today.R   ← Identify today's S/R touches
+send_support_barrier_email.py   ← Email the alert CSV
+run_support_barrier_alert.sh    ← Shell wrapper (cron-schedulable)
+```
+
+The R script uses the **identical** level-detection logic as the backtest
+(same `pivot_n`, `level_tol`, `cluster_pct`, `lookback_days`) to ensure
+consistency between simulated and live signals.
+
+## Alert Output Format
+
+Each row in the alert CSV (`support_barrier_alert_latest.csv`) contains:
+
+| Column | Description |
+|:---|:---|
+| `symbol` | Ticker |
+| `alert_date` | Today's date |
+| `alert_price` | Closing price |
+| `alert_vol` | 20-day rolling volatility |
+| `level` | Nearest S/R level triggered |
+| `level_type` | `support` or `resistance` |
+| `dist_pct` | Distance from price to level (%) |
+| `expiry` | Next monthly expiry date |
+| `days_to_exp` | Calendar days to expiry |
+
+Alerts are filtered to `days_to_exp >= 15` (configurable via `min_trade_days`)
+to avoid entering positions too close to expiry where theta decay accelerates.
+
+\newpage
+
+# Conclusion
+
+The Support/Barrier Straddle strategy demonstrates that **combining classical
+technical analysis (support/resistance detection) with options (ATM straddles)
+produces a systematic, high-win-rate approach** to profiting from the uncertainty
+around key price levels.
+
+Over the 2023–2026 backtest period on five Brazilian blue-chips:
+
+- All symbols were profitable, with returns ranging from **157.9% to 218.1%**
+  on deployed capital.
+- The strategy **outperformed the CDI benchmark by 6.4× at the portfolio level**.
+- Both support and resistance touches were profitable in all symbols, showing
+  the strategy is direction-agnostic.
+- The average holding period of **≈ 2.8 days** minimises time exposure to
+  adverse volatility moves.
+
+The daily alert module enables live deployment with automated signal generation
+and email notification, maintaining full consistency with the backtest logic.
+
+---
+
+*Report generated automatically by `sb_straddle_report.Rmd` on `r Sys.Date()`.*
+*Data source: Yahoo Finance via `quantmod`. Strategy code: `support_barrier_straddle.R`.*

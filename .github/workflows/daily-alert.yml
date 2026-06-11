@@ -1,0 +1,109 @@
+name: Daily Support/Barrier Alert
+
+on:
+  schedule:
+    # 19:00 America/Sao_Paulo == 22:00 UTC  (runs after B3 close Mon–Fri)
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:          # allow manual trigger from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  run-daily-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      TZ: America/Sao_Paulo
+      ALERT_SMTP_HOST:     ${{ secrets.ALERT_SMTP_HOST }}
+      ALERT_SMTP_PORT:     ${{ secrets.ALERT_SMTP_PORT }}
+      ALERT_SMTP_USER:     ${{ secrets.ALERT_SMTP_USER }}
+      ALERT_SMTP_PASS:     ${{ secrets.ALERT_SMTP_PASS }}
+      ALERT_EMAIL_FROM:    ${{ secrets.ALERT_EMAIL_FROM }}
+      ALERT_EMAIL_TO:      ${{ secrets.ALERT_EMAIL_TO }}
+      ALERT_SMTP_USE_TLS:  ${{ secrets.ALERT_SMTP_USE_TLS }}
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Validate secrets ──────────────────────────────────────────────────
+      - name: Validate secrets configuration
+        run: |
+          echo "=== Validating required secrets ==="
+          required=(ALERT_SMTP_HOST ALERT_SMTP_PORT ALERT_SMTP_USER ALERT_SMTP_PASS ALERT_EMAIL_FROM ALERT_EMAIL_TO ALERT_SMTP_USE_TLS)
+          missing=()
+          for s in "${required[@]}"; do
+            val="${!s}"
+            if [ -z "$val" ]; then missing+=("$s"); echo "✗ $s: NOT SET"
+            else echo "✓ $s: configured"; fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo ""; echo "ERROR: missing secrets: ${missing[*]}"
+            echo "Set them in Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo ""; echo "All secrets configured."
+
+      # ── 3. Install R + packages ──────────────────────────────────────────────
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.3"
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-sb-alert-${{ runner.os }}-${{ hashFiles('daily_alert/check_support_barrier_today.R') }}
+          restore-keys: r-sb-alert-${{ runner.os }}-
+
+      - name: Install R dependencies
+        run: |
+          Rscript -e "
+            pkgs <- c('quantmod','dplyr','tibble','readr')
+            missing <- pkgs[!pkgs %in% installed.packages()[,'Package']]
+            if (length(missing)) install.packages(missing, repos='https://cloud.r-project.org')
+          "
+
+      # ── 4. Network check ─────────────────────────────────────────────────────
+      - name: Network diagnostics
+        run: |
+          python3 -c "
+          import socket
+          hosts = [('query1.finance.yahoo.com', 443, 'Yahoo Finance')]
+          for host, port, name in hosts:
+              try:
+                  socket.getaddrinfo(host, port)
+                  print(f'✓ {name}: reachable')
+              except socket.gaierror as e:
+                  print(f'✗ {name}: {e}'); exit(1)
+          "
+
+      # ── 5. Run R alert script ─────────────────────────────────────────────────
+      - name: Run support/barrier daily check
+        working-directory: daily_alert
+        run: Rscript check_support_barrier_today.R
+
+      # ── 6. Setup Python + send e-mail ────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Send alert e-mail
+        working-directory: daily_alert
+        run: python3 send_support_barrier_email.py
+
+      # ── 7. Commit updated CSV back to repo ───────────────────────────────────
+      - name: Commit alert CSV
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add daily_alert/support_barrier_alert_latest.csv \
+                  daily_alert/support_barrier_alert_*.csv
+          git diff --cached --quiet || \
+            git commit -m "chore: daily support/barrier alert $(date +%Y-%m-%d)"
+          git push

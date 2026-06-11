@@ -1,0 +1,8 @@
+# Copie para um arquivo .env ou exporte no shell antes de rodar
+ALERT_SMTP_HOST=smtp.seuprovedor.com
+ALERT_SMTP_PORT=587
+ALERT_SMTP_USER=seu_usuario
+ALERT_SMTP_PASS=sua_senha
+ALERT_EMAIL_FROM=seu_email@provedor.com
+ALERT_EMAIL_TO=destinatario1@provedor.com,destinatario2@provedor.com
+ALERT_SMTP_USE_TLS=true

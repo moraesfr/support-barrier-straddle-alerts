@@ -1,0 +1,6 @@
+symbol,last_date,last_close,nearest_level,nearest_level_type,dist_pct,days_to_exp,is_alert,status
+VALE3.SA,2026-06-08,78.07,77.97,support,0.128,39,TRUE,ok
+BBDC4.SA,2026-06-08,17.2,17.26,resistance,0.349,39,TRUE,ok
+ITUB4.SA,2026-06-08,38.52,38.885,resistance,0.948,39,TRUE,ok
+ABEV3.SA,2026-06-08,16.08,16.34,resistance,1.617,39,FALSE,ok
+PETR4.SA,2026-06-08,41.22,38.58,support,6.405,39,FALSE,ok

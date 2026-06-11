@@ -1,0 +1,229 @@
+---
+title: "Estratégia de Straddle em Suporte/Resistência"
+subtitle: "Relatório de Backtest - Ações Brasileiras (B3)"
+author: "Análise Quantitativa"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+    keep_tex: false
+geometry: margin=2.5cm
+fontsize: 11pt
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \usepackage{xcolor}
+  - \definecolor{darkblue}{RGB}{0,70,127}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyhead[L]{\textcolor{darkblue}{\textbf{Straddle Suporte/Resistência}}}
+  - \fancyhead[R]{\textcolor{gray}{\thepage}}
+  - \renewcommand{\headrulewidth}{0.4pt}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = FALSE,
+  warning   = FALSE,
+  message   = FALSE,
+  fig.align = "center",
+  out.width = "\\textwidth"
+)
+
+library(readr)
+library(dplyr)
+library(knitr)
+
+base_dir <- dirname(knitr::current_input(dir = TRUE))
+
+summary_sym <- read_csv(file.path(base_dir, "sb_straddle_summary_by_symbol.csv"), show_col_types = FALSE)
+portfolio   <- read_csv(file.path(base_dir, "sb_straddle_portfolio_summary.csv"), show_col_types = FALSE)
+trades      <- read_csv(file.path(base_dir, "sb_straddle_trades.csv"), show_col_types = FALSE)
+alerts      <- read_csv(file.path(base_dir, "sb_straddle_alerts.csv"), show_col_types = FALSE)
+```
+
+\newpage
+
+# Resumo Executivo
+
+Este relatório descreve a estratégia de **straddle em níveis de suporte e resistência** aplicada a cinco ações líquidas da B3.
+A lógica abre um straddle ATM quando o preço toca um nível técnico relevante e encerra a posição quando atinge alvo de ganho.
+
+**Resultados principais (jan/2023 a jun/2026):**
+
+| Métrica | Valor |
+|:---|---:|
+| Símbolos operados | `r portfolio$symbols_used` |
+| Total de alertas | `r portfolio$total_alerts` |
+| Total de trades | `r portfolio$total_trades` |
+| Capital alocado | BRL `r format(portfolio$capital, big.mark=",")` |
+| PnL total | BRL `r format(round(portfolio$total_pnl, 2), big.mark=",")` |
+| Retorno total | **`r portfolio$total_return_pct`%** |
+| Taxa de acerto | `r portfolio$win_rate_pct`% |
+| Tempo médio em posição | `r portfolio$avg_hold_days` dias |
+| Retorno CDI (benchmark) | `r portfolio$cdi_return_pct`% |
+| Excesso sobre CDI | BRL `r format(round(portfolio$excess_vs_cdi, 2), big.mark=",")` |
+| Fator de superação | **`r portfolio$outperf_x`x** |
+
+A estratégia apresentou **`r portfolio$total_return_pct`%** de retorno agregado, contra **`r portfolio$cdi_return_pct`%** do CDI,
+com superação de **`r portfolio$outperf_x`x** no período.
+
+\newpage
+
+# Visão Geral da Estratégia
+
+## Conceito
+
+A estratégia combina dois pilares:
+
+1. **Suporte e resistência**: quando o preço encosta em níveis técnicos importantes, aumenta a chance de movimento relevante.
+2. **Straddle ATM**: compra simultânea de call e put no mesmo strike, capturando deslocamento para qualquer direção.
+
+Tese central: toques em suporte/resistência criam incerteza direcional e potencial expansão de volatilidade, favorecendo o straddle.
+
+## Universo de Ativos
+
+| Ticker | Empresa | Setor |
+|:---|:---|:---|
+| PETR4.SA | Petrobras | Óleo e Gás |
+| VALE3.SA | Vale | Mineração |
+| ITUB4.SA | Itaú Unibanco | Bancos |
+| BBDC4.SA | Bradesco | Bancos |
+| ABEV3.SA | Ambev | Consumo |
+
+## Parâmetros do Backtest
+
+| Parâmetro | Valor | Descrição |
+|:---|:---|:---|
+| `start_date` | 2023-01-02 | Início da simulação |
+| `end_date` | Atual | Fim da simulação |
+| `r_annual` | 8% | Taxa livre de risco |
+| `target_pct` | 20% | Alvo de saída |
+| `pivot_n` | 10 | Candles de cada lado para pivô |
+| `level_tol` | 1.5% | Distância máxima até nível |
+| `cluster_pct` | 2% | Agrupamento de níveis próximos |
+| `lookback_days` | 180 | Janela para construir níveis S/R |
+| `min_trade_days` | 15 | Mínimo de dias até vencimento |
+
+\newpage
+
+# Arquitetura do Código
+
+O script principal está em `support_barrier_straddle.R` e possui os blocos:
+
+1. **Precificação Black-Scholes** para call/put e custo do straddle.
+2. **Cálculo do próximo vencimento mensal** (3a sexta do mês seguinte).
+3. **Volatilidade rolling de 20 dias** com log-retornos.
+4. **Detecção de pivôs** de máxima e mínima para suportes/resistências.
+5. **Clusterização de níveis** para evitar sinais redundantes.
+6. **Simulação por ativo**:
+   - gera alertas por proximidade de nível técnico;
+   - remove duplicatas de curto prazo;
+   - abre e monitora straddle até alvo de 20% ou vencimento;
+   - normaliza cada trade para BRL 1.000 de capital.
+
+Também existe um módulo operacional diário em `daily_alert/`, com geração de CSV e envio por e-mail.
+
+\newpage
+
+# Resultados do Backtest
+
+## Resumo do Portfólio
+
+```{r tabela-portfolio}
+port_display <- portfolio %>%
+  select(
+    `Simbolos` = symbols_used,
+    `Alertas` = total_alerts,
+    `Trades` = total_trades,
+    `Capital (BRL)` = capital,
+    `PnL Total (BRL)` = total_pnl,
+    `Retorno (pct)` = total_return_pct,
+    `Acerto (pct)` = win_rate_pct,
+    `Hold medio (dias)` = avg_hold_days,
+    `CDI (pct)` = cdi_return_pct,
+    `Outperf x` = outperf_x
+  )
+
+kable(t(port_display), col.names = "Valor", caption = "Resumo consolidado do portfólio.",
+      booktabs = TRUE, format.args = list(big.mark = ","))
+```
+
+## Resumo por Ativo
+
+```{r tabela-simbolo}
+sym_display <- summary_sym %>%
+  select(
+    Simbolo = symbol,
+    Alertas = alerts,
+    Trades = trades,
+    Capital = capital,
+    `PnL (BRL)` = total_pnl,
+    `Retorno pct` = total_return_pct,
+    `Acerto pct` = win_rate_pct,
+    `Hold medio` = avg_hold_days,
+    `CDI pct` = cdi_return_pct,
+    `Outperf` = outperf_x
+  )
+
+kable(sym_display,
+      caption = "Métricas por símbolo. Capital = número de trades x BRL 1.000.",
+      booktabs = TRUE,
+      format.args = list(big.mark = ","),
+      digits = 2)
+```
+
+\newpage
+
+## Figura 1 - Retorno por Ativo
+
+```{r fig-retorno, fig.cap="Retorno total sobre o capital alocado por símbolo.", out.width="90%"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_return_by_symbol.png"))
+```
+
+## Figura 2 - Curva de PnL Acumulado
+
+```{r fig-equity, fig.cap="PnL acumulado por símbolo ao longo do tempo.", out.width="\\textwidth"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_equity_curve.png"))
+```
+
+## Figura 3 - PnL Médio por Tipo de Nível
+
+```{r fig-tipo-nivel, fig.cap="PnL médio por trade em suporte versus resistência.", out.width="90%"}
+knitr::include_graphics(file.path(base_dir, "sb_straddle_by_level_type.png"))
+```
+
+\newpage
+
+# Riscos, Premissas e Limitações
+
+1. **Black-Scholes simplifica a realidade**: não considera spread de opções e microestrutura.
+2. **Volatilidade histórica como proxy**: IV de mercado pode divergir da volatilidade realizada.
+3. **Sem custos operacionais**: corretagem/emolumentos não foram descontados.
+4. **Liquidez de opções**: nem todo sinal garante execução real no mercado.
+5. **Taxa de acerto muito alta**: resultado histórico não garante repetição futura.
+
+\newpage
+
+# Conclusão
+
+A estratégia de straddle em suporte/resistência mostrou resultado robusto no período testado,
+com retorno agregado elevado, tempo médio curto em posição e superação relevante do CDI.
+
+Pontos de destaque:
+
+- Retorno elevado nos cinco ativos analisados.
+- Estratégia direcionalmente neutra (captura movimento para cima ou para baixo).
+- Tempo médio de permanência baixo, reduzindo exposição temporal.
+
+Para uso em produção, recomenda-se complementar com teste fora da amostra,
+modelagem de custos reais e validação de liquidez por vencimento/série.
+
+---
+
+*Relatório gerado automaticamente por `sb_straddle_report_ptbr.Rmd` em `r Sys.Date()`.*
