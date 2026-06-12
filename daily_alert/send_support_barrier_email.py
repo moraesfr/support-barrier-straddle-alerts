@@ -88,11 +88,90 @@ def send_email(subject, body, attachment_path: Path):
     if not recipients:
         raise RuntimeError("ALERT_EMAIL_TO precisa conter ao menos 1 destinatario")
 
+    html_lines = []
+
+    html_lines.append(
+        "<html><body>"
+    )
+
+    html_lines.append(
+        "<h1>Suporte e Resistência</h1>"
+    )
+
+    for r in rows:
+
+        sym = r["symbol"]
+
+        html_lines.append(
+            f"<h2>{sym}</h2>"
+        )
+
+        html_lines.append(
+            "<ul>"
+        )
+
+        html_lines.append(
+            f"<li>Preço: {r['last_close']}</li>"
+        )
+
+        html_lines.append(
+            f"<li>Suporte: {r['support_level']} ({r['support_dist_pct']}%)</li>"
+        )
+
+        html_lines.append(
+            f"<li>Resistência: {r['resistance_level']} ({r['resistance_dist_pct']}%)</li>"
+        )
+
+        html_lines.append(
+            f"<li>Situação: {r['market_zone']}</li>"
+        )
+
+        html_lines.append(
+            "</ul>"
+        )
+
+        html_lines.append(
+            f'<img src="cid:{sym}_chart">'
+        )
+
+    html_lines.append(
+        "</body></html>"
+    )
+
+    html_body = "".join(html_lines)
+    
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"]    = smtp_from
     msg["To"]      = ", ".join(recipients)
-    msg.set_content(body)
+    msg.set_content(
+        "Seu cliente de email não suporta HTML."
+    )
+
+    msg.add_alternative(
+        html_body,
+        subtype="html"
+    )
+    
+    for r in rows:
+
+    sym = r["symbol"]
+
+        png_file = (
+            WORKDIR /
+            f"{sym.replace('.', '_')}_price.png"
+        )
+
+        if png_file.exists():
+
+            with png_file.open("rb") as f:
+
+                msg.get_payload()[1].add_related(
+                    f.read(),
+                    maintype="image",
+                    subtype="png",
+                    cid=f"<{sym}_chart>"
+                )
 
     with attachment_path.open("rb") as f:
         data = f.read()
