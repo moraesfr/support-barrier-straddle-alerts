@@ -141,18 +141,51 @@ def send_email(subject, body, attachment_path, rows: Path):
     html_body = "".join(html_lines)
     
     msg = EmailMessage()
+    html_lines = []
+
+    html_lines.append("<html><body>")
+
+    html_lines.append("<h1>Suporte/Barreira + Straddle</h1>")
+
+    html_lines.append(
+        f"""
+        <div style="
+            font-family: monospace;
+            white-space: pre-wrap;
+            background:#f5f5f5;
+            padding:10px;
+            border-radius:5px;
+        ">
+        {body}
+        </div>
+        """
+    )
+
+    html_lines.append("<hr>")
     msg["Subject"] = subject
     msg["From"]    = smtp_from
     msg["To"]      = ", ".join(recipients)
     msg.set_content(
         "Seu cliente de email não suporta HTML."
     )
-
+ 
     msg.add_alternative(
         html_body,
         subtype="html"
     )
-    
+    for r in rows:
+
+        sym = r["symbol"]
+
+        html_lines.append(f"<h2>{sym}</h2>")
+
+        html_lines.append(
+            f'<img src="cid:{sym}_chart" style="max-width:100%;">'
+        )
+
+    html_lines.append("</body></html>")
+
+    html_body = "".join(html_lines)
     for r in rows:
 
         sym = r["symbol"]
