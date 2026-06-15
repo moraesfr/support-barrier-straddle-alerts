@@ -75,7 +75,7 @@ def get_env(name, required=True, default=None):
     return value
 
 
-def send_email(subject, body, attachment_path: Path):
+def send_email(subject, body, attachment_path, rows: Path):
     smtp_host = get_env("ALERT_SMTP_HOST")
     smtp_port = int(get_env("ALERT_SMTP_PORT", required=False, default="587"))
     smtp_user = get_env("ALERT_SMTP_USER")
@@ -196,7 +196,7 @@ def main():
         print(body)
         return
 
-    send_email(subject, body, LATEST_CSV)
+    send_email(subject, body, LATEST_CSV, rows)
     print("Email enviado com sucesso.")
 
 
