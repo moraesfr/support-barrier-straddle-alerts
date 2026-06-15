@@ -75,7 +75,7 @@ def get_env(name, required=True, default=None):
     return value
 
 
-def send_email(subject, body, attachment_path, rows: Path):
+def send_email(subject, body, attachment_path: Path, rows):
     smtp_host = get_env("ALERT_SMTP_HOST")
     smtp_port = int(get_env("ALERT_SMTP_PORT", required=False, default="587"))
     smtp_user = get_env("ALERT_SMTP_USER")
@@ -88,58 +88,6 @@ def send_email(subject, body, attachment_path, rows: Path):
     if not recipients:
         raise RuntimeError("ALERT_EMAIL_TO precisa conter ao menos 1 destinatario")
 
-    html_lines = []
-
-    html_lines.append(
-        "<html><body>"
-    )
-
-    html_lines.append(
-        "<h1>Suporte e Resistência</h1>"
-    )
-
-    for r in rows:
-
-        sym = r["symbol"]
-
-        html_lines.append(
-            f"<h2>{sym}</h2>"
-        )
-
-        html_lines.append(
-            "<ul>"
-        )
-
-        html_lines.append(
-            f"<li>Preço: {r['last_close']}</li>"
-        )
-
-        html_lines.append(
-            f"<li>Suporte: {r['support_level']} ({r['support_dist_pct']}%)</li>"
-        )
-
-        html_lines.append(
-            f"<li>Resistência: {r['resistance_level']} ({r['resistance_dist_pct']}%)</li>"
-        )
-
-        html_lines.append(
-            f"<li>Situação: {r['market_zone']}</li>"
-        )
-
-        html_lines.append(
-            "</ul>"
-        )
-
-        html_lines.append(
-            f'<img src="cid:{sym}_chart">'
-        )
-
-    html_lines.append(
-        "</body></html>"
-    )
-
-    html_body = "".join(html_lines)
-    
     msg = EmailMessage()
     html_lines = []
 
@@ -162,17 +110,6 @@ def send_email(subject, body, attachment_path, rows: Path):
     )
 
     html_lines.append("<hr>")
-    msg["Subject"] = subject
-    msg["From"]    = smtp_from
-    msg["To"]      = ", ".join(recipients)
-    msg.set_content(
-        "Seu cliente de email não suporta HTML."
-    )
- 
-    msg.add_alternative(
-        html_body,
-        subtype="html"
-    )
     for r in rows:
 
         sym = r["symbol"]
@@ -186,6 +123,17 @@ def send_email(subject, body, attachment_path, rows: Path):
     html_lines.append("</body></html>")
 
     html_body = "".join(html_lines)
+    msg["Subject"] = subject
+    msg["From"]    = smtp_from
+    msg["To"]      = ", ".join(recipients)
+    msg.set_content(
+        "Seu cliente de email não suporta HTML."
+    )
+ 
+    msg.add_alternative(
+        html_body,
+        subtype="html"
+    )
     for r in rows:
 
         sym = r["symbol"]
