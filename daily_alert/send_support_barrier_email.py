@@ -155,7 +155,7 @@ def send_email(subject, body, attachment_path: Path):
     
     for r in rows:
 
-    sym = r["symbol"]
+        sym = r["symbol"]
 
         png_file = (
             WORKDIR /
